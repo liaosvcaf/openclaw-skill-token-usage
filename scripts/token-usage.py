@@ -121,6 +121,7 @@ def scan_sessions(sessions_dir, days):
 
             date_str = local_dt.strftime("%Y-%m-%d")
 
+            cost_obj = usage.get("cost", {}) or {}
             entries.append({
                 "date": date_str,
                 "hour": local_dt.hour,
@@ -133,7 +134,11 @@ def scan_sessions(sessions_dir, days):
                 "cache_read": usage.get("cacheRead", 0) or 0,
                 "cache_write": usage.get("cacheWrite", 0) or 0,
                 "total": usage.get("totalTokens", 0) or 0,
-                "cost": (usage.get("cost", {}) or {}).get("total", 0) or 0,
+                "cost": cost_obj.get("total", 0) or 0,
+                "cost_input": cost_obj.get("input", 0) or 0,
+                "cost_output": cost_obj.get("output", 0) or 0,
+                "cost_cache_read": cost_obj.get("cacheRead", 0) or 0,
+                "cost_cache_write": cost_obj.get("cacheWrite", 0) or 0,
             })
 
     return entries
@@ -185,7 +190,7 @@ def aggregate(entries):
     agg = {
         "totals": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0, "cost": 0, "calls": 0},
         "by_date": defaultdict(lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0, "cost": 0, "calls": 0}),
-        "by_model": defaultdict(lambda: {"input": 0, "output": 0, "total": 0, "cost": 0, "calls": 0}),
+        "by_model": defaultdict(lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0, "cost": 0, "cost_input": 0, "cost_output": 0, "cost_cache_read": 0, "cost_cache_write": 0, "calls": 0}),
         "by_channel": defaultdict(lambda: {"input": 0, "output": 0, "total": 0, "cost": 0, "calls": 0}),
         "by_session": defaultdict(lambda: {"input": 0, "output": 0, "total": 0, "cost": 0, "calls": 0, "channel": "?", "model": "?"}),
         "by_hour": defaultdict(lambda: {"total": 0, "calls": 0}),
@@ -203,9 +208,14 @@ def aggregate(entries):
             b["total"] += e["total"]
             b["cost"] += e["cost"]
             b["calls"] += 1
-            if group_key == "by_date":
+            if group_key in ("by_date", "by_model"):
                 b["cache_read"] += e["cache_read"]
                 b["cache_write"] += e["cache_write"]
+            if group_key == "by_model":
+                b["cost_input"] += e["cost_input"]
+                b["cost_output"] += e["cost_output"]
+                b["cost_cache_read"] += e["cost_cache_read"]
+                b["cost_cache_write"] += e["cost_cache_write"]
             if group_key == "by_session":
                 b["channel"] = e["channel"]
                 b["model"] = e["model"]
@@ -253,9 +263,19 @@ def report_text(agg, detail=False):
         if b["total"] == 0 and b["cost"] == 0:
             continue
         pct = (b["total"] / t["total"] * 100) if t["total"] else 0
+        # Compute effective $/M rates from actual cost data
+        in_rate = (b["cost_input"] / b["input"] * 1_000_000) if b["input"] > 0 else 0
+        out_rate = (b["cost_output"] / b["output"] * 1_000_000) if b["output"] > 0 else 0
+        cr_rate = (b["cost_cache_read"] / b["cache_read"] * 1_000_000) if b["cache_read"] > 0 else 0
+        cw_rate = (b["cost_cache_write"] / b["cache_write"] * 1_000_000) if b["cache_write"] > 0 else 0
         rows.append((model, fmt_tokens(b["input"]), fmt_tokens(b["output"]),
-                      fmt_tokens(b["total"]), fmt_cost(b["cost"]), f"{pct:.0f}%", b["calls"]))
-    print_table(["Model", "Input", "Output", "Total", "Cost", "%", "Calls"], rows)
+                      fmt_tokens(b["cache_read"]), fmt_tokens(b["cache_write"]),
+                      fmt_cost(b["cost"]),
+                      f"${in_rate:.2f}", f"${out_rate:.2f}",
+                      f"${cr_rate:.2f}", f"${cw_rate:.2f}",
+                      f"{pct:.0f}%", b["calls"]))
+    print_table(["Model", "Input", "Output", "CacheRd", "CacheWr", "Cost",
+                  "In$/M", "Out$/M", "CRd$/M", "CWr$/M", "%", "Calls"], rows)
 
     # By channel
     print(f"\n--- By Channel ---")
