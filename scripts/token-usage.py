@@ -57,6 +57,98 @@ def to_local(ts_str):
         return None
 
 
+def detect_channel(text):
+    """Detect channel from user message text. Returns channel string."""
+    if "[Telegram" in text:
+        return "telegram"
+    elif "[Discord" in text:
+        return "discord"
+    elif "[Signal" in text:
+        return "signal"
+    elif "[Slack" in text:
+        return "slack"
+    elif "[message_id:" in text:
+        return "webchat"
+    return "other"
+
+
+def extract_user_text(msg):
+    """Extract text content from a user message."""
+    content = msg.get("content", [])
+    if isinstance(content, list):
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "text":
+                return c.get("text", "")
+    elif isinstance(content, str):
+        return content
+    return ""
+
+
+def parse_session_lines(lines, session_id):
+    """Parse JSONL lines from a single session into usage entries.
+
+    Args:
+        lines: iterable of raw JSONL strings
+        session_id: session identifier (will be truncated to 8 chars)
+
+    Returns:
+        list of usage entry dicts
+    """
+    entries = []
+    current_channel = None
+
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+
+        msg = d.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+
+        # Detect channel from user message patterns (per-message, not sticky)
+        if msg.get("role") == "user":
+            text = extract_user_text(msg)
+            current_channel = detect_channel(text)
+
+        if msg.get("role") != "assistant":
+            continue
+
+        usage = msg.get("usage") or d.get("usage")
+        if not usage:
+            continue
+
+        ts = d.get("timestamp")
+        local_dt = to_local(ts) if ts else None
+        if not local_dt:
+            continue
+
+        date_str = local_dt.strftime("%Y-%m-%d")
+
+        cost_obj = usage.get("cost", {}) or {}
+        entries.append({
+            "date": date_str,
+            "hour": local_dt.hour,
+            "model": msg.get("model", d.get("model", "unknown")),
+            "provider": msg.get("provider", d.get("provider", "unknown")),
+            "session_id": session_id[:8],
+            "channel": current_channel or "unknown",
+            "input": usage.get("input", 0) or 0,
+            "output": usage.get("output", 0) or 0,
+            "cache_read": usage.get("cacheRead", 0) or 0,
+            "cache_write": usage.get("cacheWrite", 0) or 0,
+            "total": usage.get("totalTokens", 0) or 0,
+            "cost": cost_obj.get("total", 0) or 0,
+            "cost_input": cost_obj.get("input", 0) or 0,
+            "cost_output": cost_obj.get("output", 0) or 0,
+            "cost_cache_read": cost_obj.get("cacheRead", 0) or 0,
+            "cost_cache_write": cost_obj.get("cacheWrite", 0) or 0,
+        })
+
+    return entries
+
+
 def scan_sessions(sessions_dir, days):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     cutoff_ts = cutoff.timestamp()
@@ -73,75 +165,8 @@ def scan_sessions(sessions_dir, days):
             continue
 
         session_id = f.stem
-        session_channel = None
-
-        for line in open(f, errors="replace"):
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-
-            msg = d.get("message", {})
-            if not isinstance(msg, dict):
-                continue
-
-            # Detect channel from user message patterns (per-message, not sticky)
-            if msg.get("role") == "user":
-                text = ""
-                content = msg.get("content", [])
-                if isinstance(content, list):
-                    for c in content:
-                        if isinstance(c, dict) and c.get("type") == "text":
-                            text = c.get("text", "")
-                            break
-                elif isinstance(content, str):
-                    text = content
-                if "[Telegram" in text:
-                    session_channel = "telegram"
-                elif "[Discord" in text:
-                    session_channel = "discord"
-                elif "[Signal" in text:
-                    session_channel = "signal"
-                elif "[Slack" in text:
-                    session_channel = "slack"
-                elif "[message_id:" in text:
-                    session_channel = "webchat"
-                else:
-                    session_channel = "other"
-
-            if msg.get("role") != "assistant":
-                continue
-
-            usage = msg.get("usage") or d.get("usage")
-            if not usage:
-                continue
-
-            ts = d.get("timestamp")
-            local_dt = to_local(ts) if ts else None
-            if not local_dt:
-                continue
-
-            date_str = local_dt.strftime("%Y-%m-%d")
-
-            cost_obj = usage.get("cost", {}) or {}
-            entries.append({
-                "date": date_str,
-                "hour": local_dt.hour,
-                "model": msg.get("model", d.get("model", "unknown")),
-                "provider": msg.get("provider", d.get("provider", "unknown")),
-                "session_id": session_id[:8],
-                "channel": session_channel or "unknown",
-                "input": usage.get("input", 0) or 0,
-                "output": usage.get("output", 0) or 0,
-                "cache_read": usage.get("cacheRead", 0) or 0,
-                "cache_write": usage.get("cacheWrite", 0) or 0,
-                "total": usage.get("totalTokens", 0) or 0,
-                "cost": cost_obj.get("total", 0) or 0,
-                "cost_input": cost_obj.get("input", 0) or 0,
-                "cost_output": cost_obj.get("output", 0) or 0,
-                "cost_cache_read": cost_obj.get("cacheRead", 0) or 0,
-                "cost_cache_write": cost_obj.get("cacheWrite", 0) or 0,
-            })
+        with open(f, errors="replace") as fh:
+            entries.extend(parse_session_lines(fh, session_id))
 
     return entries
 
