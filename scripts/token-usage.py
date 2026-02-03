@@ -85,7 +85,7 @@ def scan_sessions(sessions_dir, days):
             if not isinstance(msg, dict):
                 continue
 
-            # Detect channel from user message patterns
+            # Detect channel from user message patterns (per-message, not sticky)
             if msg.get("role") == "user":
                 text = ""
                 content = msg.get("content", [])
@@ -104,8 +104,10 @@ def scan_sessions(sessions_dir, days):
                     session_channel = "signal"
                 elif "[Slack" in text:
                     session_channel = "slack"
-                elif session_channel is None and "[message_id:" in text:
+                elif "[message_id:" in text:
                     session_channel = "webchat"
+                else:
+                    session_channel = "other"
 
             if msg.get("role") != "assistant":
                 continue
